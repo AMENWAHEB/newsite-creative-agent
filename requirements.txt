@@ -1,0 +1,6 @@
+anthropic
+openai
+python-telegram-bot==21.9
+apscheduler
+requests
+Pillow
