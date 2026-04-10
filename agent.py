@@ -10,6 +10,8 @@ from anthropic import Anthropic
 from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from bidi.algorithm import get_display
+import arabic_reshaper
 
 # ── ENV ──────────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN    = os.environ["TELEGRAM_TOKEN"]
@@ -214,98 +216,139 @@ def create_gradient_bg(width: int, height: int) -> Image.Image:
     return img
 
 
-def add_text_to_image(img: Image.Image, text: str, position: tuple,
-                       font_size: int = 48, color: tuple = (255,255,255),
-                       align: str = "center") -> Image.Image:
-    """מוסיף טקסט לתמונה"""
-    draw = ImageDraw.Draw(img)
+# ── FONT SETUP ────────────────────────────────────────────────────────────────
+FONT_PATH = "/tmp/NotoSansHebrew.ttf"
+FONT_URL  = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansHebrew/NotoSansHebrew-Regular.ttf"
+
+def ensure_font():
+    if not os.path.exists(FONT_PATH):
+        try:
+            r = requests.get(FONT_URL, timeout=30)
+            with open(FONT_PATH, "wb") as f:
+                f.write(r.content)
+            print("✅ פונט הורד")
+        except Exception as e:
+            print(f"⚠️ לא הצלחתי להוריד פונט: {e}")
+
+def get_font(size: int) -> ImageFont.FreeTypeFont:
+    paths = [
+        FONT_PATH,
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ]
+    for p in paths:
+        try:
+            return ImageFont.truetype(p, size)
+        except:
+            continue
+    return ImageFont.load_default()
+
+def fix_rtl(text: str) -> str:
+    """תיקון כיוון RTL לעברית/ערבית"""
     try:
-        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
+        reshaped = arabic_reshaper.reshape(text)
+        return get_display(reshaped)
     except:
-        font = ImageFont.load_default()
+        return text
 
-    # Word wrap
-    words = text.split()
-    lines = []
-    current_line = []
-    max_width = img.width - 80
+def draw_text_block(draw: ImageDraw.Draw, text: str, y_center: int,
+                     img_width: int, font_size: int,
+                     color: tuple = (255, 255, 255),
+                     max_chars: int = 22) -> int:
+    """מצייר בלוק טקסט מרוכז עם wrap — מחזיר Y הסופי"""
+    font = get_font(font_size)
+    # חלוקה לשורות לפי אורך
+    words   = text.split()
+    lines   = []
+    current = []
+    for w in words:
+        current.append(w)
+        if len(" ".join(current)) > max_chars:
+            if len(current) > 1:
+                current.pop()
+                lines.append(" ".join(current))
+                current = [w]
+    if current:
+        lines.append(" ".join(current))
 
-    for word in words:
-        current_line.append(word)
-        test_line = " ".join(current_line)
-        bbox = draw.textbbox((0, 0), test_line, font=font)
-        if bbox[2] - bbox[0] > max_width:
-            if len(current_line) > 1:
-                current_line.pop()
-                lines.append(" ".join(current_line))
-                current_line = [word]
-            else:
-                lines.append(test_line)
-                current_line = []
-    if current_line:
-        lines.append(" ".join(current_line))
+    line_h = font_size + 10
+    total_h = len(lines) * line_h
+    y = y_center - total_h // 2
 
-    y = position[1]
     for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font)
-        text_width = bbox[2] - bbox[0]
-        if align == "center":
-            x = (img.width - text_width) // 2
-        else:
-            x = position[0]
+        rtl_line = fix_rtl(line)
+        bbox = draw.textbbox((0, 0), rtl_line, font=font)
+        w = bbox[2] - bbox[0]
+        x = (img_width - w) // 2
+        # צל
+        draw.text((x+2, y+2), rtl_line, font=font, fill=(0, 0, 0, 160))
+        draw.text((x, y), rtl_line, font=font, fill=color)
+        y += line_h
 
-        # Shadow
-        draw.text((x+2, y+2), line, font=font, fill=(0,0,0,180))
-        draw.text((x, y), line, font=font, fill=color)
-        y += (bbox[3] - bbox[1]) + 10
-
-    return img
+    return y
 
 
 def create_carousel(slides: list, topic: str) -> list:
-    """יוצר קרוסלה לאינסטגרם"""
+    """יוצר קרוסלה לאינסטגרם — עיצוב מקצועי"""
+    ensure_font()
     output_paths = []
+    W, H = 1080, 1080
 
     for i, slide in enumerate(slides):
-        # יצירת תמונה עם DALL-E
+        # ── רקע: DALL-E או גרדיאנט ──
         result = generate_image_dalle(
-            prompt=f"Professional business background for: {slide['image_prompt']}. Clean, modern, suitable for text overlay. No text.",
+            prompt=f"Professional minimalist business photo, no text, suitable for overlay: {slide['image_prompt']}. High quality, clean composition.",
             size="1024x1024",
             style="vivid"
         )
-
         if result["success"]:
-            bg_img = download_image(result["url"])
-            bg_img = bg_img.resize((1080, 1080), Image.LANCZOS)
+            bg = download_image(result["url"]).resize((W, H), Image.LANCZOS).convert("RGBA")
         else:
-            # fallback - גרדיאנט
-            bg_img = create_gradient_bg(1080, 1080)
+            bg = create_gradient_bg(W, H)
 
-        # שכבת overlay כהה
-        overlay = Image.new("RGBA", (1080, 1080), (0, 0, 0, 140))
-        bg_img = Image.alpha_composite(bg_img.convert("RGBA"), overlay)
+        # ── overlay כהה (גרדיאנט מלמטה) ──
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        od = ImageDraw.Draw(overlay)
+        for row in range(H):
+            alpha = int(80 + (row / H) * 140)
+            od.line([(0, row), (W, row)], fill=(10, 5, 30, alpha))
+        bg = Image.alpha_composite(bg, overlay)
 
-        # מספר שקופית
-        bg_img = add_text_to_image(bg_img, f"{i+1}/{len(slides)}", (40, 40),
-                                    font_size=32, color=(255,255,255,180))
+        draw = ImageDraw.Draw(bg)
 
-        # כותרת
-        bg_img = add_text_to_image(bg_img, slide["title"], (0, 350),
-                                    font_size=64, color=NEWSITE_WHITE)
+        # ── פס עליון: מספר שקופית + שם מותג ──
+        draw.rectangle([(0, 0), (W, 80)], fill=(107, 70, 193, 200))
+        f_small = get_font(30)
+        draw.text((30, 22), fix_rtl(f"NEWSITE"), font=f_small, fill=(255,255,255))
+        num_text = f"{i+1} / {len(slides)}"
+        nb = draw.textbbox((0,0), num_text, font=f_small)
+        draw.text((W - (nb[2]-nb[0]) - 30, 22), num_text, font=f_small, fill=(220,220,220))
 
-        # טקסט
-        bg_img = add_text_to_image(bg_img, slide["text"], (0, 500),
-                                    font_size=36, color=(220, 220, 220))
+        # ── כותרת ראשית ──
+        draw_text_block(draw, slide["title"], H // 2 - 60, W,
+                        font_size=68, color=(255, 255, 255), max_chars=18)
 
-        # לוגו NEWSITE בתחתית
-        draw = ImageDraw.Draw(bg_img)
-        draw.rectangle([(0, 980), (1080, 1080)], fill=(107, 70, 193, 220))
-        bg_img = add_text_to_image(bg_img, "NEWSITE.CO.IL", (0, 990),
-                                    font_size=32, color=NEWSITE_WHITE)
+        # ── קו מפריד ──
+        draw.rectangle([(W//2 - 60, H//2 + 50), (W//2 + 60, H//2 + 56)],
+                        fill=(107, 70, 193))
 
-        # שמירה
-        path = f"/tmp/carousel_{topic}_{i+1}.png"
-        bg_img.convert("RGB").save(path, "PNG", quality=95)
+        # ── טקסט משני ──
+        draw_text_block(draw, slide["text"], H // 2 + 120, W,
+                        font_size=38, color=(220, 220, 240), max_chars=28)
+
+        # ── פס תחתון ──
+        draw.rectangle([(0, H - 90), (W, H)], fill=(15, 10, 40, 230))
+        f_logo = get_font(32)
+        logo = fix_rtl("newsite.co.il")
+        lb = draw.textbbox((0,0), logo, font=f_logo)
+        draw.text(((W - (lb[2]-lb[0])) // 2, H - 65), logo,
+                   font=f_logo, fill=(167, 139, 250))
+
+        # ── שמירה ──
+        path = f"/tmp/slide_{topic}_{i+1}.png"
+        bg.convert("RGB").save(path, "PNG", quality=95)
         output_paths.append(path)
 
     return output_paths
