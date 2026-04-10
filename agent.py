@@ -578,13 +578,6 @@ async def main():
     app.add_handler(CommandHandler("help",  cmd_help))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(
-        chat_id=CHAT_ID,
-        text="🎨 *Creative Agent מוכן!*\n\nשלח /help לרשימת פקודות",
-        parse_mode="Markdown"
-    )
-
     print("✅ Creative Agent פועל...")
     await app.run_polling(drop_pending_updates=True)
 
