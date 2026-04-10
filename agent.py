@@ -568,19 +568,27 @@ async def weekly_content_ideas():
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
-async def main():
+async def post_init(application):
     scheduler = AsyncIOScheduler(timezone="Asia/Jerusalem")
     scheduler.add_job(weekly_content_ideas, "cron", day_of_week="mon", hour=9, minute=0)
     scheduler.start()
+    print("✅ Scheduler פועל")
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+def main():
+    app = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
     app.add_handler(CommandHandler("start", cmd_help))
     app.add_handler(CommandHandler("help",  cmd_help))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
     print("✅ Creative Agent פועל...")
-    await app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
