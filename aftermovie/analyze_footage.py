@@ -132,6 +132,7 @@ def make_windows(seg, feats, fps, win, step):
             "t0": s / fps,  # seconds from segment start
             "t1": e / fps,
             "path": seg["path"],
+            "drone": bool(seg.get("drone")),
             "src0": seg["start"] + s / fps,  # seconds in the source file
             "src1": seg["start"] + e / fps,
             "motion": float(np.mean(feats["motion"][s:e])),
@@ -236,8 +237,11 @@ def build_rough_cut(wins, segs, target):
         pool = [w for w in wins if id(w) not in used_wins]
         preferred = [w for w in pool if key == "overall" or w["category"] == key]
         pref_ids = {id(w) for w in preferred}
-        ranked = sorted(preferred, key=lambda w: -w[key]) + \
-            sorted([w for w in pool if id(w) not in pref_ids], key=lambda w: -w[key])
+        def rank_key(w):
+            boost = 0.5 if w["drone"] and name in ("Intro", "Outro") else 0.0
+            return -(w[key] + boost)
+        ranked = sorted(preferred, key=rank_key) + \
+            sorted([w for w in pool if id(w) not in pref_ids], key=rank_key)
         chosen, seg_in_section = [], set()
         for w in ranked:
             if len(chosen) >= count:
@@ -258,10 +262,13 @@ def build_rough_cut(wins, segs, target):
         clips = []
         for w in chosen:
             seg = segs[w["seg"]]
+            tag = " | DRONE" if w["drone"] else ""
             clips.append(clip_from_window(
-                w, seg, clip_len, name, color,
-                f"{name} | energy {w['energy']:.2f} quality {w['quality']:.2f}"))
-        clips.sort(key=lambda c: c["order"])  # keep the night's chronology
+                w, seg, clip_len + (1.0 if w["drone"] and name in ("Intro", "Outro") else 0.0), name,
+                "Teal" if w["drone"] else color,
+                f"{name}{tag} | energy {w['energy']:.2f} quality {w['quality']:.2f}"))
+        # drone opens the intro / closes the outro, the rest keeps the night's chronology
+        clips.sort(key=lambda c: (("DRONE" in c["note"]) == (name == "Outro"), c["order"]))
         if clips:
             markers.append({"time_sec": t, "color": color, "name": name.upper(),
                             "note": f"{len(clips)} clips, ~{clip_len}s each"})
@@ -275,9 +282,10 @@ def build_stringout(highlights, segs, limit):
     out = []
     for i, w in enumerate(highlights[:limit], 1):
         seg = segs[w["seg"]]
-        color = {"peak": "Orange", "build": "Yellow", "mood": "Blue"}[w["category"]]
+        color = "Teal" if w["drone"] else {"peak": "Orange", "build": "Yellow", "mood": "Blue"}[w["category"]]
+        kind = "drone" if w["drone"] else w["category"]
         c = clip_from_window(w, seg, w["t1"] - w["t0"], f"#{i}", color,
-                             f"#{i} {w['category']} | score {w['overall']:.2f}")
+                             f"#{i} {kind} | score {w['overall']:.2f}")
         out.append(c)
     return out
 
@@ -304,6 +312,7 @@ def load_segments(args):
             data = json.load(f)
         for c in data["clips"]:
             segs.append(dict(c, order=c["timeline_start_frame"]))
+        print(f"Drone clips included: {sum(1 for c in data['clips'] if c.get('drone'))}")
         source = f"{data.get('project')} / {data.get('timeline')}"
     for i, s in enumerate(segs):
         s["id"] = i

@@ -61,6 +61,26 @@ def to_float(v, default=0.0):
         return default
 
 
+DRONE_WORDS = [w.strip().lower() for w in os.environ.get(
+    "AFTERMOVIE_DRONE_KEYWORDS", "drone,רחפן,dji,mavic,avata,air 3,mini 4").split(",") if w.strip()]
+
+
+def find_drone_clips(folder, trail, skip_paths, out):
+    """Video clips in the media pool whose bin or name looks like drone footage."""
+    here = trail + [folder.GetName() or ""]
+    for mpi in folder.GetClipList() or []:
+        path = mpi.GetClipProperty("File Path") or ""
+        kind = (mpi.GetClipProperty("Type") or "").lower()
+        if not path or path in skip_paths or "video" not in kind:
+            continue
+        text = " / ".join(here + [mpi.GetName() or "", os.path.basename(path)]).lower()
+        if any(w in text for w in DRONE_WORDS):
+            out.append((mpi, " / ".join(here)))
+            skip_paths.add(path)
+    for sub in folder.GetSubFolderList() or []:
+        find_drone_clips(sub, here, skip_paths, out)
+
+
 def main():
     resolve = get_resolve()
     project = resolve.GetProjectManager().GetCurrentProject()
@@ -102,6 +122,25 @@ def main():
                 "timeline_duration_frames": dur_tl,
             })
 
+    # Drone shots that live in the media pool but are not on the timeline.
+    drones = []
+    find_drone_clips(project.GetMediaPool().GetRootFolder(), [],
+                     {c["path"] for c in clips}, drones)
+    for mpi, bin_path in drones:
+        fps = to_float(mpi.GetClipProperty("FPS"), tl_fps) or tl_fps
+        frames = int(to_float(mpi.GetClipProperty("Frames"), 0))
+        if frames <= 0:
+            continue
+        clips.append({
+            "track": 0, "index": 0, "name": mpi.GetName(),
+            "path": mpi.GetClipProperty("File Path"),
+            "media_id": call(mpi, "GetUniqueId", default="") or call(mpi, "GetMediaId", default=""),
+            "clip_fps": fps, "clip_start_tc": mpi.GetClipProperty("Start TC") or "",
+            "src_start_frame": 0, "src_end_frame": frames,
+            "timeline_start_frame": -1, "timeline_duration_frames": 0,
+            "drone": True, "bin": bin_path,
+        })
+
     clips.sort(key=lambda c: (c["timeline_start_frame"], c["track"]))
     os.makedirs(OUT_DIR, exist_ok=True)
     out = os.path.join(OUT_DIR, "timeline_clips.json")
@@ -114,7 +153,12 @@ def main():
             "clips": clips,
         }, f, ensure_ascii=False, indent=2)
     total = sum(c["timeline_duration_frames"] for c in clips) / tl_fps
-    print(f"Exported {len(clips)} clips ({total/60:.1f} min) from '{tl.GetName()}' -> {out}")
+    print(f"Exported {len(clips) - len(drones)} clips ({total/60:.1f} min) from '{tl.GetName()}' -> {out}")
+    print(f"Drone clips found in media pool: {len(drones)}")
+    for mpi, bin_path in drones[:20]:
+        print(f"  - {bin_path} / {mpi.GetName()}")
+    if not drones:
+        print("  (none - put them in a bin named 'Drone' or 'רחפן', or set AFTERMOVIE_DRONE_KEYWORDS)")
 
 
 main()
